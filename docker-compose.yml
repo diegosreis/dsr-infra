@@ -1,0 +1,37 @@
+name: vps-gateway
+
+services:
+  gateway:
+    image: nginx:alpine
+    container_name: vps-gateway
+    restart: unless-stopped
+    ports:
+      - "${HTTP_PORT:-80}:80"
+      - "${HTTPS_PORT:-443}:443"
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/templates/nginx.conf:ro
+      - ./nginx/sites:/etc/nginx/templates/sites:ro
+      - ./scripts/entrypoint.sh:/gateway-entrypoint.sh:ro
+      - /etc/letsencrypt:/etc/letsencrypt:ro
+      - gateway_image_cache:/var/cache/nginx/images
+      - certbot_www:/var/www/certbot
+    entrypoint: ["/bin/sh", "/gateway-entrypoint.sh"]
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1/nginx-health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    networks:
+      - shared-infra
+
+volumes:
+  gateway_image_cache:
+    name: vps_gateway_image_cache
+  certbot_www:
+    name: vps_gateway_certbot_www
+
+networks:
+  shared-infra:
+    external: true
+    name: marmitas-catalog_marmitas-network
