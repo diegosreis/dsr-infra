@@ -1,94 +1,105 @@
 # dsr-infra
 
-Gateway e infraestrutura compartilhada da VPS (Diego Reis).
+Infraestrutura compartilhada da VPS (Diego Reis):
 
-Dono das portas **80/443**. As apps (Marmitas, Bangalô, …) só escutam na rede Docker interna.
+- **MySQL**, **MinIO**, **Redis**
+- **Gateway Nginx** (portas 80/443)
+
+As apps **não** sobem banco/storage — só entram na rede `dsr-shared`.
 
 ## Arquitetura
 
 ```text
 Internet
    │
-vps-gateway (:80/:443)          ← este repo
-   ├─ avera-marmitas.online     → marmitas-app:3000
-   └─ bangalostudio.com.br      → bangalo-app:3000
+vps-gateway (:80/:443)
+   ├─ avera-marmitas.online  → marmitas-app:3000
+   └─ bangalostudio.com.br   → bangalo-app:3000
               │
-   rede: marmitas-catalog_marmitas-network
-              │
-   mysql · minio · redis · apps   ← repos das aplicações
+         dsr-shared
+    ┌─────┼──────┐
+ dsr-mysql  dsr-minio  dsr-redis
+    │
+ apps (repos separados)
 ```
 
 | Repo | Papel |
 |------|--------|
-| **dsr-infra** | Gateway Nginx + vhosts |
-| [marmitas-catalog](https://github.com/diegosreis/marmitas-catalog) | App + MySQL + MinIO + Redis |
+| **dsr-infra** | Dados + gateway |
+| [marmitas-catalog](https://github.com/diegosreis/marmitas-catalog) | App Marmitas |
 | [Bangalo-studio](https://github.com/diegosreis/Bangalo-studio) | App Bangalô |
 
-## Na VPS
+DNS interno (aliases na rede): `mysql`, `minio`, `redis`.
+
+## Setup inicial na VPS
 
 ```bash
 cd /opt
 git clone https://github.com/diegosreis/dsr-infra.git
 cd dsr-infra
-
-# Rede compartilhada (criada pelo compose do Marmitas; se ainda não existir:)
-docker network create marmitas-catalog_marmitas-network 2>/dev/null || true
+cp .env.example .env
+nano .env   # senhas iguais às que já usa no Marmitas
 
 chmod +x deploy.sh scripts/entrypoint.sh
 ./deploy.sh
 ```
 
-## Pré-requisitos
+Volumes reutilizam os nomes antigos (sem perder dados):
 
-1. Stack do Marmitas já sobe a rede e os dados:
+- `marmitas-catalog_mysql_data`
+- `marmitas-catalog_minio_data`
+- `marmitas-catalog_redis_data`
+
+## Migrar da stack antiga (marmitas com mysql/nginx embutidos)
 
 ```bash
-cd /opt/marmitas-catalog && docker compose up -d
+# 1. Parar apps e serviços antigos (NÃO use -v — preserva volumes)
+cd /opt/marmitas-catalog
+docker compose stop
+docker stop marmitas-nginx marmitas-mysql marmitas-minio marmitas-redis 2>/dev/null || true
+docker rm marmitas-nginx marmitas-mysql marmitas-minio marmitas-redis marmitas-minio-init 2>/dev/null || true
+
+# 2. Subir infra nova (mesmos volumes)
+cd /opt/dsr-infra
+# .env com as MESMAS senhas do .env antigo do marmitas
+./deploy.sh
+
+# 3. Apps na rede dsr-shared
+cd /opt/marmitas-catalog && git pull && docker compose up -d --remove-orphans
+cd /opt/Bangalo-studio && git pull && ./deploy.sh
+
+# 4. Testar
+curl -s https://avera-marmitas.online | grep -o '<title>[^<]*</title>'
+curl -s https://bangalostudio.com.br | grep -o '<title>[^<]*</title>'
 ```
 
-2. Certificados no host:
+## Certificados
 
 ```bash
 ls /etc/letsencrypt/live/avera-marmitas.online/
 ls /etc/letsencrypt/live/bangalostudio.com.br/
 ```
 
-Sites **sem** certificado são ignorados no boot (o gateway sobe mesmo assim).
+Sites sem certificado são ignorados no boot do gateway.
 
-## Migrar do `marmitas-nginx` antigo
+## Novo app na rede
 
-```bash
-docker stop marmitas-nginx 2>/dev/null || true
-docker rm marmitas-nginx 2>/dev/null || true
+No `docker-compose.yml` da app:
 
-cd /opt/dsr-infra && ./deploy.sh
-
-cd /opt/marmitas-catalog && docker compose up -d --remove-orphans
-cd /opt/Bangalo-studio && ./deploy.sh
+```yaml
+networks:
+  shared-infra:
+    external: true
+    name: dsr-shared
 ```
 
-## Sites
+Hostnames: `mysql:3306`, `minio:9000`, `redis:6379`.
+
+## Sites Nginx
 
 | Arquivo | Domínio |
 |---------|---------|
 | `nginx/sites/marmitas.conf` | avera-marmitas.online |
 | `nginx/sites/bangalo.conf` | bangalostudio.com.br |
 
-A Bangalô mantém a fonte em `Bangalo-studio/nginx/site.conf`; o `deploy.sh` dela copia para `dsr-infra/nginx/sites/bangalo.conf` e recarrega o gateway.
-
-## Novo domínio
-
-1. DNS A → IP da VPS  
-2. Certificado (`certbot certonly --standalone …` — pare o gateway se usar standalone)  
-3. Crie `nginx/sites/novo.conf`  
-4. Adicione `enable_site` em `scripts/entrypoint.sh`  
-5. `./deploy.sh`
-
-## Comandos úteis
-
-```bash
-./deploy.sh
-docker compose logs -f gateway
-docker compose exec gateway nginx -s reload
-curl -s http://127.0.0.1/nginx-health
-```
+Bangalô: fonte em `Bangalo-studio/nginx/site.conf` → copiada no deploy para `nginx/sites/bangalo.conf`.

@@ -4,19 +4,18 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")" && pwd)"
 cd "$ROOT"
 
-NETWORK_NAME="${SHARED_NETWORK_NAME:-marmitas-catalog_marmitas-network}"
-
-if ! docker network inspect "$NETWORK_NAME" >/dev/null 2>&1; then
-  echo "[gateway] Criando rede compartilhada: $NETWORK_NAME"
-  docker network create "$NETWORK_NAME"
+if [ ! -f .env ]; then
+  cp .env.example .env
+  echo "[infra] .env criado a partir de .env.example — edite as senhas antes de produção."
 fi
 
-echo "[gateway] Subindo proxy reverso (portas 80/443)..."
+echo "[infra] Subindo MySQL + MinIO + Redis + gateway..."
 docker compose up -d
 
-echo "[gateway] Status:"
+echo "[infra] Status:"
 docker compose ps
 
 echo ""
+echo "Rede:   dsr-shared"
 echo "Health: curl -s http://127.0.0.1/nginx-health"
-echo "Logs:   docker compose logs -f gateway"
+echo "Logs:   docker compose logs -f"

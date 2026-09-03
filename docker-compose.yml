@@ -1,6 +1,100 @@
-name: vps-gateway
+name: dsr-infra
 
 services:
+  mysql:
+    image: mysql:8.0
+    container_name: dsr-mysql
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:?Defina MYSQL_ROOT_PASSWORD no .env}
+      MYSQL_DATABASE: ${MYSQL_DATABASE:-marmitas}
+      MYSQL_USER: ${MYSQL_USER:-marmitas}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:?Defina MYSQL_PASSWORD no .env}
+    volumes:
+      - mysql_data:/var/lib/mysql
+    command: >
+      --character-set-server=utf8mb4
+      --collation-server=utf8mb4_unicode_ci
+      --innodb-buffer-pool-size=64M
+      --performance-schema=OFF
+      --max-connections=50
+      --innodb-flush-method=O_DIRECT
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "mysql -h 127.0.0.1 -u\"$$MYSQL_USER\" -p\"$$MYSQL_PASSWORD\" -e 'SELECT 1' \"$$MYSQL_DATABASE\" >/dev/null 2>&1",
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+      start_period: 120s
+    networks:
+      shared:
+        aliases:
+          - mysql
+
+  minio:
+    image: minio/minio:latest
+    container_name: dsr-minio
+    restart: unless-stopped
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:?Defina MINIO_ROOT_USER no .env}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:?Defina MINIO_ROOT_PASSWORD no .env}
+    ports:
+      - "127.0.0.1:${MINIO_PORT:-9000}:9000"
+      - "127.0.0.1:${MINIO_CONSOLE_PORT:-9001}:9001"
+    volumes:
+      - minio_data:/minio_data
+    command: server /minio_data --console-address ":9001"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    networks:
+      shared:
+        aliases:
+          - minio
+
+  minio-init:
+    image: minio/mc:latest
+    container_name: dsr-minio-init
+    depends_on:
+      minio:
+        condition: service_healthy
+    entrypoint: >
+      /bin/sh -c "
+      mc alias set local http://minio:9000 $${MINIO_ROOT_USER} $${MINIO_ROOT_PASSWORD} &&
+      mc mb local/$${MINIO_BUCKET} --ignore-existing
+      "
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
+      MINIO_BUCKET: ${MINIO_BUCKET:-marmitas}
+    networks:
+      - shared
+    restart: "no"
+
+  redis:
+    image: redis:7-alpine
+    container_name: dsr-redis
+    restart: unless-stopped
+    command: redis-server --save 60 1 --loglevel warning
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 5s
+    networks:
+      shared:
+        aliases:
+          - redis
+
   gateway:
     image: nginx:alpine
     container_name: vps-gateway
@@ -16,6 +110,13 @@ services:
       - gateway_image_cache:/var/cache/nginx/images
       - certbot_www:/var/www/certbot
     entrypoint: ["/bin/sh", "/gateway-entrypoint.sh"]
+    depends_on:
+      mysql:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
     healthcheck:
       test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1/nginx-health"]
       interval: 30s
@@ -23,15 +124,21 @@ services:
       retries: 3
       start_period: 10s
     networks:
-      - shared-infra
+      - shared
 
 volumes:
+  mysql_data:
+    name: marmitas-catalog_mysql_data
+  minio_data:
+    name: marmitas-catalog_minio_data
+  redis_data:
+    name: marmitas-catalog_redis_data
   gateway_image_cache:
     name: vps_gateway_image_cache
   certbot_www:
     name: vps_gateway_certbot_www
 
 networks:
-  shared-infra:
-    external: true
-    name: marmitas-catalog_marmitas-network
+  shared:
+    name: dsr-shared
+    driver: bridge
