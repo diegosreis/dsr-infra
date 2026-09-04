@@ -21,5 +21,17 @@ enable_site() {
 enable_site marmitas /etc/letsencrypt/live/avera-marmitas.online/fullchain.pem
 enable_site bangalo /etc/letsencrypt/live/bangalostudio.com.br/fullchain.pem
 
-nginx -t
+# Evita falha do nginx quando o glob sites-enabled/*.conf está vazio
+if ! ls /etc/nginx/sites-enabled/*.conf >/dev/null 2>&1; then
+  printf '%s\n' '# placeholder — nenhum site com certificado' > /etc/nginx/sites-enabled/00-placeholder.conf
+  echo "[gateway] nenhum site SSL habilitado (placeholder)"
+fi
+
+echo "[gateway] testando configuração..."
+if ! nginx -t; then
+  echo "[gateway] nginx -t falhou. Certificados montados:"
+  ls -la /etc/letsencrypt/live/ 2>/dev/null || echo "(sem /etc/letsencrypt/live)"
+  exit 1
+fi
+
 exec nginx -g "daemon off;"
