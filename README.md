@@ -14,7 +14,7 @@ Internet
    │
 vps-gateway (:80/:443)
    ├─ avera-marmitas.online  → marmitas-app:3000
-   └─ bangalostudio.com.br   → bangalo-app:3000
+   └─ bangalostudio.com.br / bangalostudio.com → bangalo-app:3000
               │
          dsr-shared
     ┌─────┼──────┐
@@ -100,6 +100,6 @@ Hostnames: `mysql:3306`, `minio:9000`, `redis:6379`.
 | Arquivo | Domínio |
 |---------|---------|
 | `nginx/sites/marmitas.conf` | avera-marmitas.online |
-| `nginx/sites/bangalo.conf` | bangalostudio.com.br |
+| `nginx/sites/bangalo.conf` | bangalostudio.com.br + bangalostudio.com |
 
 Bangalô: fonte em `Bangalo-studio/nginx/site.conf` → copiada no deploy para `nginx/sites/bangalo.conf`.
