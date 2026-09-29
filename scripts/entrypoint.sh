@@ -20,6 +20,7 @@ enable_site() {
 
 enable_site marmitas /etc/letsencrypt/live/avera-marmitas.online/fullchain.pem
 enable_site bangalo /etc/letsencrypt/live/bangalostudio.com.br/fullchain.pem
+enable_site maciel /etc/letsencrypt/live/dentistamarciomaciel.com.br/fullchain.pem
 
 # Evita falha do nginx quando o glob sites-enabled/*.conf está vazio
 if ! ls /etc/nginx/sites-enabled/*.conf >/dev/null 2>&1; then
