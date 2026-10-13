@@ -15,8 +15,8 @@ Internet
 vps-gateway (:80/:443)
    ├─ avera-marmitas.online  → marmitas-app:3000
    ├─ bangalostudio.com.br / bangalostudio.com → bangalo-app:3000
-   └─ dentistamarciomaciel.com.br / .online → maciel-app:3000
-   └─ dentistamarciomaciel.com.br / .online → maciel-app:3000
+   ├─ dentistamarciomaciel.com.br / .online → maciel-app:3000
+   └─ ortoimplante.digital → ortoimplante-web:80 (+ /api → ortoimplante-api:80)
               │
          dsr-shared
     ┌─────┼──────┐
@@ -104,6 +104,8 @@ Hostnames: `mysql:3306`, `minio:9000`, `redis:6379`.
 | `nginx/sites/marmitas.conf` | avera-marmitas.online |
 | `nginx/sites/bangalo.conf` | bangalostudio.com.br + bangalostudio.com |
 | `nginx/sites/maciel.conf` | dentistamarciomaciel.com.br + .online |
+| `nginx/sites/ortoimplante.conf` | ortoimplante.digital |
 
 Bangalô: fonte em `Bangalo-studio/nginx/site.conf` → copiada no deploy para `nginx/sites/bangalo.conf`.
 Maciel: fonte em `marcio-maciel-odonto/nginx/site.conf` → copiada no deploy para `nginx/sites/maciel.conf`.
+Ortoimplante: fonte em `ortoimplante/nginx/site.conf` → copiada no deploy para `nginx/sites/ortoimplante.conf`.
