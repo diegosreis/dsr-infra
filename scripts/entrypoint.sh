@@ -9,13 +9,19 @@ rm -f /etc/nginx/sites-enabled/*.conf
 enable_site() {
   name="$1"
   cert="$2"
+  src="/etc/nginx/templates/sites/${name}.conf"
 
-  if [ -f "$cert" ]; then
-    cp "/etc/nginx/templates/sites/${name}.conf" "/etc/nginx/sites-enabled/${name}.conf"
-    echo "[gateway] site habilitado: ${name}"
-  else
+  if [ ! -f "$cert" ]; then
     echo "[gateway] site ignorado (sem certificado): ${name} → ${cert}"
+    return 0
   fi
+  if [ ! -f "$src" ]; then
+    echo "[gateway] site ignorado (sem vhost): ${name} → ${src}"
+    return 0
+  fi
+
+  cp "$src" "/etc/nginx/sites-enabled/${name}.conf"
+  echo "[gateway] site habilitado: ${name}"
 }
 
 enable_site marmitas /etc/letsencrypt/live/avera-marmitas.online/fullchain.pem
