@@ -16,7 +16,8 @@ vps-gateway (:80/:443)
    ├─ avera-marmitas.online  → marmitas-app:3000
    ├─ bangalostudio.com.br / bangalostudio.com → bangalo-app:3000
    ├─ dentistamarciomaciel.com.br / .online → maciel-app:3000
-   └─ gestaodental.online → ortoimplante-web:80 (+ /api → ortoimplante-api:80)
+   ├─ gestaodental.online → ortoimplante-web:80 (+ /api → ortoimplante-api:80)
+   └─ morenalab.site / www → morenalab-app:3000
               │
          dsr-shared
     ┌─────┼──────┐
@@ -30,6 +31,7 @@ vps-gateway (:80/:443)
 | **dsr-infra** | Dados + gateway |
 | [marmitas-catalog](https://github.com/diegosreis/marmitas-catalog) | App Marmitas |
 | [Bangalo-studio](https://github.com/diegosreis/Bangalo-studio) | App Bangalô |
+| MorenaLab | App Morena Lab (CMS institucional) |
 
 DNS interno (aliases na rede): `mysql`, `minio`, `redis`.
 
