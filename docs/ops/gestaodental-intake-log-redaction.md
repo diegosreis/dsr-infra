@@ -79,15 +79,58 @@ printf 'Guardar este caminho exato para recuperação: %s\n' "$BACKUP"
 
 Só depois: `git pull` / checkout da infra no `$INFRA`.
 
-### 2. Testar template e conferir configuração ativa
+### 2. Testar template e conferir configuração (sem truncar)
+
+Capturar dumps em `$BACKUP` (privado). Não imprimir a config completa.
+Usar `grep -E ... || true` / contagens explícitas para evitar SIGPIPE com
+`set -euo pipefail`.
 
 ```bash
 set -euo pipefail
-docker exec vps-gateway /bin/sh /etc/nginx/templates/sites/gd-log-safe/run.sh \
+FILTER=/etc/nginx/templates/sites/gd-log-safe/run.sh
+
+# --- Template (fonte montada; ainda pode diferir do ativo até recriar) ---
+docker exec vps-gateway /bin/sh "$FILTER" \
   nginx -e stderr -t -c /etc/nginx/templates/nginx.conf
-# Conferir includes/error_log na fonte e no ativo (não dumpar config completa).
-docker exec vps-gateway nginx -T 2>/dev/null | grep -E 'error_log|access_log|gd_intake|gd-log-safe' | head
+docker exec vps-gateway /bin/sh "$FILTER" \
+  nginx -e stderr -T -c /etc/nginx/templates/nginx.conf \
+  >"$BACKUP/nginx-T-template.dump" 2>"$BACKUP/nginx-T-template.err"
+test -s "$BACKUP/nginx-T-template.dump"
+
+# --- Ativo (configuração em uso no container; após recreate deve refletir o template) ---
+docker exec vps-gateway /bin/sh "$FILTER" nginx -e stderr -t
+docker exec vps-gateway /bin/sh "$FILTER" nginx -e stderr -T \
+  >"$BACKUP/nginx-T-active.dump" 2>"$BACKUP/nginx-T-active.err"
+test -s "$BACKUP/nginx-T-active.dump"
+
+assert_log_directives() {
+  local label=$1 file=$2
+  local hits
+  hits=$(grep -E '^\s*(error_log|access_log)\b|gd_intake_safe|gd-log-safe|gd_safe_request_uri' "$file" || true)
+  test -n "$hits" || { echo "FALHA: sem diretivas relevantes em $label"; exit 1; }
+  # Persistir o extrato completo (sem head) para auditoria local
+  printf '%s\n' "$hits" >"$BACKUP/nginx-directives-$label.txt"
+  grep -E '^\s*error_log\s+stderr\b' "$file" >/dev/null \
+    || { echo "FALHA: $label sem error_log stderr"; exit 1; }
+  # Nenhum error_log para arquivo/syslog que contorne o filtro
+  if grep -E '^\s*error_log\s+' "$file" | grep -Ev 'stderr|/dev/null' >/dev/null; then
+    echo "FALHA: $label tem error_log fora de stderr|/dev/null"; exit 1
+  fi
+  grep -E 'gd_intake_safe|access_log\s+/dev/stdout\s+gd_intake_safe' "$file" >/dev/null \
+    || { echo "FALHA: $label sem access_log gd_intake_safe no vhost GD"; exit 1; }
+  # Contagem explícita (todas as ocorrências, não só as primeiras)
+  printf '%s error_log=%s access_log=%s\n' "$label" \
+    "$(grep -cE '^\s*error_log\s+' "$file" || true)" \
+    "$(grep -cE '^\s*access_log\s+' "$file" || true)"
+}
+
+assert_log_directives template "$BACKUP/nginx-T-template.dump"
+assert_log_directives active "$BACKUP/nginx-T-active.dump"
 ```
+
+Notas: a conferência do **template** valida a fonte montada; a do **ativo**
+valida o que o nginx em execução carregou. Após o recreate do gateway, ambas
+devem alinhar. Não colar esses dumps no chat.
 
 ### 3. Recriar SOMENTE o gateway (identidade Compose real)
 

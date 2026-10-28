@@ -319,7 +319,9 @@ try:
         api_path = f"/api/v1/public/patient-intake/{marker}?repeat={marker}"
         ordinary_path = f"/ordinary-probe?repeat={marker}"
 
-        def run_gateway(phase: str, upstream_starter) -> tuple[str, str, int]:
+        def run_gateway(
+            phase: str, upstream_starter, expected_status: int
+        ) -> tuple[str, str, int]:
             up_name = f"dsr-gd-up-{phase}-{PID}"
             gw_name = f"dsr-gd-gw-{phase}-{PID}"
             upstream_starter(up_name)
@@ -393,9 +395,17 @@ try:
                     code_c, body_c = hit(convite_path)
                     code_a, body_a = hit(api_path)
                     code_o, _ = hit(ordinary_path)
+                    for route, code in (
+                        ("convite", code_c),
+                        ("api", code_a),
+                        ("ordinary", code_o),
+                    ):
+                        assert code == expected_status, (
+                            f"fase={phase} rota={route}: esperado HTTP "
+                            f"{expected_status}, recebido {code}"
+                        )
                     time.sleep(0.5)
                     rc = quit_gateway(proc, gw_name)
-                    # Drenagem: arquivos de log devem existir após encerrar
                     assert out_path.exists() and err_path.exists()
                     return out_path.read_text() + err_path.read_text(), body_c + "\n" + body_a, rc
                 except Exception:
@@ -406,12 +416,11 @@ try:
                     raise
 
         # Fase OK: URI intacta + access log sanitizado
-        logs_ok, bodies, rc_ok = run_gateway("ok", start_ok_upstream)
+        logs_ok, bodies, rc_ok = run_gateway("ok", start_ok_upstream, 200)
         assert rc_ok == 0, f"QUIT fase ok rc={rc_ok}"
         assert marker not in logs_ok
         assert_access_sanitized(logs_ok, "/convite/[redacted]", marker)
         assert_access_sanitized(logs_ok, "/api/v1/public/patient-intake/[redacted]", marker)
-        # rota comum com Referer sensível + query: path sem token de convite permanece
         assert re.search(
             r'"GET /ordinary-probe HTTP/[0-9.]+" [0-9]{3} .*rt=',
             logs_ok,
@@ -419,11 +428,10 @@ try:
         assert convite_path in bodies, "URI /convite ao upstream foi alterada"
         assert api_path in bodies, "URI /api patient-intake ao upstream foi alterada"
 
-        # Remover upstream OK antes do fail (aliases exclusivos)
         run(["docker", "rm", "-f", f"dsr-gd-up-ok-{PID}"])
 
         # Fase FAIL: error_log com Referer/query sensíveis
-        logs_fail, _, rc_fail = run_gateway("fail", start_fail_upstream)
+        logs_fail, _, rc_fail = run_gateway("fail", start_fail_upstream, 502)
         assert rc_fail == 0, f"QUIT fase fail rc={rc_fail}"
         assert marker not in logs_fail
         assert "diagnostic context [redacted]" in logs_fail
