@@ -36,11 +36,19 @@ if ! ls /etc/nginx/sites-enabled/*.conf >/dev/null 2>&1; then
   echo "[gateway] nenhum site SSL habilitado (placeholder)"
 fi
 
-echo "[gateway] testando configuração..."
-if ! nginx -t; then
-  echo "[gateway] nginx -t falhou. Certificados montados:"
-  ls -la /etc/letsencrypt/live/ 2>/dev/null || echo "(sem /etc/letsencrypt/live)"
+FILTER=/etc/nginx/templates/sites/gd-log-safe/run.sh
+REDACTOR=/etc/nginx/templates/sites/gd-log-safe/redactor.awk
+
+if [ ! -r "$FILTER" ] || [ ! -r "$REDACTOR" ]; then
+  echo "[gateway] filtro gd-log-safe ausente ou ilegível em /etc/nginx/templates/sites/gd-log-safe/" >&2
   exit 1
 fi
 
-exec nginx -g "daemon off;"
+echo "[gateway] testando configuração (via filtro gd-log-safe)..."
+if ! /bin/sh "$FILTER" nginx -e stderr -t; then
+  echo "[gateway] nginx -t (via filtro) falhou. Certificados montados:" >&2
+  ls -la /etc/letsencrypt/live/ 2>/dev/null || echo "(sem /etc/letsencrypt/live)" >&2
+  exit 1
+fi
+
+exec /bin/sh "$FILTER" nginx -e stderr -g "daemon off;"

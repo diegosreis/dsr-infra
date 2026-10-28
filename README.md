@@ -77,6 +77,16 @@ curl -s https://avera-marmitas.online | grep -o '<title>[^<]*</title>'
 curl -s https://bangalostudio.com.br | grep -o '<title>[^<]*</title>'
 ```
 
+## Gateway — logs de convite (Gestão Dental)
+
+O entrypoint do gateway envolve o nginx com
+`nginx/sites/gd-log-safe/` (filtro de stderr). Access log sanitizado do
+vhost vem do `site.conf` do app. **Reload não instala o wrapper** — recriar
+só o serviço `gateway` numa janela autorizada.
+
+Runbook: `docs/ops/gestaodental-intake-log-redaction.md`.  
+Teste local: `python3 scripts/tests/gd-log-safe-gateway-test.py`.
+
 ## Certificados
 
 ```bash
