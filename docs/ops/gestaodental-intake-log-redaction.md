@@ -4,6 +4,10 @@
 `FEATURE_PATIENT_INTAKE_PUBLIC=false` até prova positiva nas três camadas
 (app web/API + este gateway) em janela autorizada.
 
+Roteiro único de go-live (4 fases): no repo **gestaodental**,
+`docs/ops/patient-intake-go-live.md`. Este arquivo detalha só o gateway.
+**Não** aplicar o patch antigo do app (`*.intake-log-redaction.patch`).
+
 ## Implementado neste repositório
 
 - `nginx/sites/gd-log-safe/run.sh` + `redactor.awk` — cópias canônicas do app
