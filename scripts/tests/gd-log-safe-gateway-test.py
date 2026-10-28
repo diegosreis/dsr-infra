@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
 """Integração real do filtro gd-log-safe no gateway dsr-infra.
 
-Usa nginx:alpine + template/entrypoint reais. Marcadores exclusivamente fictícios.
+Usa nginx:alpine + template/entrypoint/vhosts versionados. Marcadores fictícios.
 """
 from __future__ import annotations
 
 import os
+import re
 import shutil
 import subprocess
 import tempfile
@@ -17,13 +18,28 @@ FILTER_DIR = ROOT / "nginx/sites/gd-log-safe"
 ENTRYPOINT = ROOT / "scripts/entrypoint.sh"
 TEMPLATE = ROOT / "nginx/nginx.conf"
 SITES = ROOT / "nginx/sites"
+GD_SITE = SITES / "gestaodental.conf"
 FILTER_PATH = "/etc/nginx/templates/sites/gd-log-safe/run.sh"
+PID = os.getpid()
+NETWORK = f"dsr-gd-net-{PID}"
+CLEANUP: list[tuple[str, list[str]]] = []
 
 if not shutil.which("docker"):
     raise SystemExit("docker é obrigatório para este teste (nginx real)")
 
-for path in (FILTER_DIR / "run.sh", FILTER_DIR / "redactor.awk", ENTRYPOINT, TEMPLATE):
+for path in (
+    FILTER_DIR / "run.sh",
+    FILTER_DIR / "redactor.awk",
+    ENTRYPOINT,
+    TEMPLATE,
+    GD_SITE,
+):
     assert path.is_file(), path
+
+assert "4142d65" in GD_SITE.read_text()
+assert "gd_intake_safe" in GD_SITE.read_text()
+assert "ortoimplante-web" in GD_SITE.read_text()
+assert "access_log /dev/stdout gd_intake_safe" in GD_SITE.read_text()
 
 subprocess.run(["sh", "-n", str(FILTER_DIR / "run.sh")], check=True)
 subprocess.run(["sh", "-n", str(ENTRYPOINT)], check=True)
@@ -48,12 +64,17 @@ conf_text = TEMPLATE.read_text()
 assert "error_log stderr warn;" in conf_text
 http_preamble = conf_text.split("http {", 1)[1].split("server {", 1)[0]
 active_http = "\n".join(
-    line for line in http_preamble.splitlines() if line.strip() and not line.strip().startswith("#")
+    line
+    for line in http_preamble.splitlines()
+    if line.strip() and not line.strip().startswith("#")
 )
 assert "access_log" not in active_http
 compose = (ROOT / "docker-compose.yml").read_text()
 assert "./nginx/sites:/etc/nginx/templates/sites" in compose
-assert FILTER_PATH == "/etc/nginx/templates/sites/gd-log-safe/run.sh"
+
+
+def run(cmd: list[str], **kwargs) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(cmd, text=True, capture_output=True, **kwargs)
 
 
 def docker_ip(container: str) -> str:
@@ -71,183 +92,211 @@ def docker_ip(container: str) -> str:
     return out
 
 
-def curl_code(network: str, args: list[str]) -> int:
-    result = subprocess.run(
-        ["docker", "run", "--rm", "--network", network, "curlimages/curl:8.5.0", *args],
-        text=True,
-        capture_output=True,
-        timeout=45,
+def track(kind: str, name: str) -> str:
+    CLEANUP.append((kind, [name]))
+    return name
+
+
+def cleanup_all() -> None:
+    for kind, names in reversed(CLEANUP):
+        for name in names:
+            if kind == "container":
+                run(["docker", "rm", "-f", name])
+            elif kind == "network":
+                run(["docker", "network", "rm", name])
+    CLEANUP.clear()
+
+
+def volumes_for(sites_dir: Path, letsencrypt: Path) -> list[str]:
+    return [
+        "-v",
+        f"{TEMPLATE}:/etc/nginx/templates/nginx.conf:ro",
+        "-v",
+        f"{sites_dir}:/etc/nginx/templates/sites:ro",
+        "-v",
+        f"{ENTRYPOINT}:/gateway-entrypoint.sh:ro",
+        "-v",
+        f"{letsencrypt}:/etc/letsencrypt:ro",
+        "--network",
+        NETWORK,
+    ]
+
+
+def start_ok_upstream(name: str) -> None:
+    """Echo $request_uri on :80 and :3000 (aliases apontam para este container)."""
+    conf = (
+        "server { listen 80 default_server; listen 3000 default_server; "
+        "location / { default_type text/plain; return 200 \"$request_uri\\n\"; } }\n"
     )
-    assert result.returncode == 0, result.stderr
-    return int(result.stdout.strip())
-
-
-with tempfile.TemporaryDirectory(prefix="dsr-gd-log-safe-") as tmp_raw:
-    tmp = Path(tmp_raw)
-    tmp.chmod(0o755)
-    sites = tmp / "sites"
-    shutil.copytree(SITES, sites)
-
-    cert_root = tmp / "letsencrypt/live"
-    base_cert_dir = cert_root / "gestaodental.online"
-    base_cert_dir.mkdir(parents=True)
-    cert = base_cert_dir / "fullchain.pem"
-    key = base_cert_dir / "privkey.pem"
-    subprocess.run(
+    track("container", name)
+    r = run(
         [
-            "openssl",
-            "req",
-            "-x509",
-            "-newkey",
-            "rsa:2048",
-            "-nodes",
-            "-days",
-            "1",
-            "-subj",
-            "/CN=gestaodental.online",
-            "-keyout",
-            str(key),
-            "-out",
-            str(cert),
+            "docker",
+            "run",
+            "-d",
+            "--name",
+            name,
+            "--network",
+            NETWORK,
+            "--network-alias",
+            "ortoimplante-web",
+            "--network-alias",
+            "ortoimplante-api",
+            "--network-alias",
+            "bangalo-app",
+            "--network-alias",
+            "marmitas-app",
+            "--network-alias",
+            "maciel-app",
+            "--network-alias",
+            "morenalab-app",
+            "nginx:alpine",
+            "sh",
+            "-c",
+            f"printf '%s' '{conf}' > /etc/nginx/conf.d/default.conf && nginx -g 'daemon off;'",
         ],
-        check=True,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
+        timeout=60,
     )
-    for domain in (
-        "avera-marmitas.online",
-        "bangalostudio.com.br",
-        "dentistamarciomaciel.com.br",
-        "morenalab.site",
-    ):
-        d = cert_root / domain
-        d.mkdir(parents=True)
-        shutil.copy(cert, d / "fullchain.pem")
-        shutil.copy(key, d / "privkey.pem")
+    assert r.returncode == 0, r.stderr
 
-    network = f"dsr-gd-net-{os.getpid()}"
-    subprocess.run(["docker", "network", "create", network], check=True, capture_output=True)
-    dead_name = f"dsr-gd-dead-{os.getpid()}"
+
+def start_fail_upstream(name: str) -> None:
+    """Mesmos aliases, sem listener — força 502 no proxy."""
+    track("container", name)
+    r = run(
+        [
+            "docker",
+            "run",
+            "-d",
+            "--name",
+            name,
+            "--network",
+            NETWORK,
+            "--network-alias",
+            "ortoimplante-web",
+            "--network-alias",
+            "ortoimplante-api",
+            "--network-alias",
+            "bangalo-app",
+            "--network-alias",
+            "marmitas-app",
+            "--network-alias",
+            "maciel-app",
+            "--network-alias",
+            "morenalab-app",
+            "nginx:alpine",
+            "sleep",
+            "3600",
+        ],
+        timeout=60,
+    )
+    assert r.returncode == 0, r.stderr
+
+
+def curl_on_net(args: list[str], timeout: int = 45) -> subprocess.CompletedProcess[str]:
+    return run(
+        ["docker", "run", "--rm", "--network", NETWORK, "curlimages/curl:8.5.0", *args],
+        timeout=timeout,
+    )
+
+
+def assert_access_sanitized(logs: str, path_redacted: str, marker: str) -> None:
+    assert marker not in logs, "marcador bruto no log"
+    pattern = rf'"(GET|HEAD|POST) {re.escape(path_redacted)} HTTP/[0-9.]+" [0-9]{{3}} .*rt='
+    assert re.search(pattern, logs), f"access sanitizado ausente para {path_redacted}"
+
+
+def quit_gateway(proc: subprocess.Popen[bytes], name: str, timeout: float = 20.0) -> int:
+    kill = run(["docker", "kill", "--signal=QUIT", name])
+    assert kill.returncode == 0, f"QUIT não enviado: {kill.stderr}"
     try:
-        subprocess.run(
+        return proc.wait(timeout=timeout)
+    except subprocess.TimeoutExpired as exc:
+        raise AssertionError(f"QUIT não encerrou em {timeout}s") from exc
+
+
+try:
+    run(["docker", "network", "create", NETWORK], check=True, timeout=30)
+    track("network", NETWORK)
+
+    with tempfile.TemporaryDirectory(prefix="dsr-gd-log-safe-") as tmp_raw:
+        tmp = Path(tmp_raw)
+        tmp.chmod(0o755)
+        sites = tmp / "sites"
+        shutil.copytree(SITES, sites)
+        # Vhosts reais intactos (sem trocar proxy_pass / inventar server).
+        assert (sites / "gestaodental.conf").read_bytes() == GD_SITE.read_bytes()
+        for name in ("bangalo", "maciel", "marmitas", "morenalab"):
+            assert "proxy_pass" in (sites / f"{name}.conf").read_text()
+
+        cert_root = tmp / "letsencrypt/live"
+        domains = (
+            "gestaodental.online",
+            "avera-marmitas.online",
+            "bangalostudio.com.br",
+            "dentistamarciomaciel.com.br",
+            "morenalab.site",
+        )
+        first = cert_root / domains[0]
+        first.mkdir(parents=True)
+        cert, key = first / "fullchain.pem", first / "privkey.pem"
+        run(
             [
-                "docker",
-                "run",
-                "-d",
-                "--rm",
-                "--name",
-                dead_name,
-                "--network",
-                network,
-                "nginx:alpine",
-                "sleep",
-                "3600",
+                "openssl",
+                "req",
+                "-x509",
+                "-newkey",
+                "rsa:2048",
+                "-nodes",
+                "-days",
+                "1",
+                "-subj",
+                "/CN=gestaodental.online",
+                "-keyout",
+                str(key),
+                "-out",
+                str(cert),
             ],
             check=True,
-            capture_output=True,
+            timeout=30,
         )
+        for domain in domains[1:]:
+            d = cert_root / domain
+            d.mkdir(parents=True)
+            shutil.copy(cert, d / "fullchain.pem")
+            shutil.copy(key, d / "privkey.pem")
 
-        (sites / "gestaodental.conf").write_text(
-            f"""
-server {{
-    listen 80;
-    server_name gestaodental.online;
-    access_log off;
-    error_log stderr warn;
-    location / {{ return 301 https://$host$request_uri; }}
-}}
-server {{
-    listen 443 ssl;
-    http2 on;
-    server_name gestaodental.online;
-    ssl_certificate     /etc/letsencrypt/live/gestaodental.online/fullchain.pem;
-    ssl_certificate_key /etc/letsencrypt/live/gestaodental.online/privkey.pem;
-    access_log off;
-    error_log stderr warn;
-    location ^~ /api/v1/public/patient-intake/ {{
-        error_log stderr warn;
-        set $up http://{dead_name}:9;
-        proxy_pass $up;
-        proxy_connect_timeout 1s;
-        proxy_read_timeout 1s;
-    }}
-    location ^~ /convite/ {{
-        error_log stderr warn;
-        set $up http://{dead_name}:9;
-        proxy_pass $up;
-        proxy_connect_timeout 1s;
-        proxy_read_timeout 1s;
-    }}
-    location /ordinary {{
-        error_log stderr warn;
-        set $up http://{dead_name}:9;
-        proxy_pass $up;
-        proxy_connect_timeout 1s;
-        proxy_read_timeout 1s;
-    }}
-    location / {{
-        return 200 "gd-fixture\\n";
-        add_header Content-Type text/plain;
-    }}
-}}
-"""
-        )
-
-        for name in ("bangalo", "maciel", "marmitas", "morenalab"):
-            src = sites / f"{name}.conf"
-            lines = []
-            for line in src.read_text().splitlines():
-                if "proxy_pass" in line:
-                    lines.append("        return 204;")
-                else:
-                    lines.append(line)
-            src.write_text("\n".join(lines) + "\n")
-
-        def volumes_for(sites_dir: Path) -> list[str]:
-            return [
-                "-v",
-                f"{TEMPLATE}:/etc/nginx/templates/nginx.conf:ro",
-                "-v",
-                f"{sites_dir}:/etc/nginx/templates/sites:ro",
-                "-v",
-                f"{ENTRYPOINT}:/gateway-entrypoint.sh:ro",
-                "-v",
-                f"{tmp / 'letsencrypt'}:/etc/letsencrypt:ro",
-                "--network",
-                network,
-            ]
-
+        # --- filtro ausente ---
         sites_missing = tmp / "sites-missing"
         shutil.copytree(sites, sites_missing)
         shutil.rmtree(sites_missing / "gd-log-safe")
-        missing = subprocess.run(
+        missing = run(
             [
                 "docker",
                 "run",
                 "--rm",
                 "--name",
-                f"dsr-gd-missing-{os.getpid()}",
-                *volumes_for(sites_missing),
+                f"dsr-gd-missing-{PID}",
+                *volumes_for(sites_missing, tmp / "letsencrypt"),
                 "--entrypoint",
                 "/bin/sh",
                 "nginx:alpine",
                 "/gateway-entrypoint.sh",
             ],
-            text=True,
-            capture_output=True,
             timeout=60,
         )
         assert missing.returncode != 0
         assert "gd-log-safe" in (missing.stdout + missing.stderr)
 
-        syntax = subprocess.run(
+        # --- nginx -t com vhosts reais ---
+        syntax = run(
             [
                 "docker",
                 "run",
                 "--rm",
                 "--name",
-                f"dsr-gd-t-{os.getpid()}",
-                *volumes_for(sites),
+                f"dsr-gd-t-{PID}",
+                *volumes_for(sites, tmp / "letsencrypt"),
                 "--entrypoint",
                 "/bin/sh",
                 "nginx:alpine",
@@ -256,126 +305,136 @@ server {{
                 "cp /etc/nginx/templates/nginx.conf /etc/nginx/nginx.conf && "
                 "rm -f /etc/nginx/sites-enabled/*.conf && "
                 "for f in /etc/nginx/templates/sites/*.conf; do "
-                "[ -f \"$f\" ] || continue; "
-                "cp \"$f\" /etc/nginx/sites-enabled/; done && "
+                "[ -f \"$f\" ] || continue; cp \"$f\" /etc/nginx/sites-enabled/; done && "
                 f"/bin/sh {FILTER_PATH} nginx -e stderr -t",
             ],
-            text=True,
-            capture_output=True,
             timeout=60,
         )
         assert syntax.returncode == 0, syntax.stdout + syntax.stderr
 
         marker = "GD_FAKE_" + os.urandom(12).hex()
         ref = f"https://gestaodental.online/convite/{marker}?repeat={marker}"
-        gw_name = f"dsr-gd-run-{os.getpid()}"
-        out_path = tmp / "gateway.out"
-        err_path = tmp / "gateway.err"
         host = "gestaodental.online"
+        convite_path = f"/convite/{marker}?repeat={marker}"
+        api_path = f"/api/v1/public/patient-intake/{marker}?repeat={marker}"
+        ordinary_path = f"/ordinary-probe?repeat={marker}"
 
-        with out_path.open("wb") as out_f, err_path.open("wb") as err_f:
-            proc = subprocess.Popen(
-                [
-                    "docker",
-                    "run",
-                    "--name",
-                    gw_name,
-                    *volumes_for(sites),
-                    "--entrypoint",
-                    "/bin/sh",
-                    "nginx:alpine",
-                    "/gateway-entrypoint.sh",
-                ],
-                stdout=out_f,
-                stderr=err_f,
-            )
-            try:
-                for _ in range(100):
-                    if proc.poll() is not None:
-                        raise AssertionError(err_path.read_text() + out_path.read_text())
-                    health = subprocess.run(
-                        [
-                            "docker",
-                            "run",
-                            "--rm",
-                            "--network",
-                            network,
-                            "curlimages/curl:8.5.0",
-                            "-s",
-                            "-o",
-                            "/dev/null",
-                            "-w",
-                            "%{http_code}",
-                            f"http://{gw_name}/nginx-health",
-                        ],
-                        text=True,
-                        capture_output=True,
-                        timeout=20,
-                    )
-                    if health.returncode == 0 and health.stdout.strip() == "200":
-                        break
-                    time.sleep(0.1)
-                else:
-                    raise AssertionError("gateway não iniciou:\n" + err_path.read_text())
-
-                gw_ip = docker_ip(gw_name)
-
-                def status(path: str, referer: str) -> int:
-                    return curl_code(
-                        network,
-                        [
-                            "-sk",
-                            "-o",
-                            "/dev/null",
-                            "-w",
-                            "%{http_code}",
-                            "-H",
-                            f"Host: {host}",
-                            "-H",
-                            f"Referer: {referer}",
-                            "--resolve",
-                            f"{host}:443:{gw_ip}",
-                            f"https://{host}{path}",
-                        ],
-                    )
-
-                assert status(f"/convite/{marker}?repeat={marker}", ref) == 502
-                assert status(f"/api/v1/public/patient-intake/{marker}?repeat={marker}", ref) == 502
-                assert status("/ordinary", ref) == 502
-                time.sleep(0.5)
-            finally:
-                subprocess.run(
-                    ["docker", "kill", "--signal=QUIT", gw_name],
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL,
+        def run_gateway(phase: str, upstream_starter) -> tuple[str, str, int]:
+            up_name = f"dsr-gd-up-{phase}-{PID}"
+            gw_name = f"dsr-gd-gw-{phase}-{PID}"
+            upstream_starter(up_name)
+            time.sleep(0.4)
+            out_path = tmp / f"{phase}.out"
+            err_path = tmp / f"{phase}.err"
+            track("container", gw_name)
+            with out_path.open("wb") as out_f, err_path.open("wb") as err_f:
+                proc = subprocess.Popen(
+                    [
+                        "docker",
+                        "run",
+                        "--name",
+                        gw_name,
+                        *volumes_for(sites, tmp / "letsencrypt"),
+                        "--entrypoint",
+                        "/bin/sh",
+                        "nginx:alpine",
+                        "/gateway-entrypoint.sh",
+                    ],
+                    stdout=out_f,
+                    stderr=err_f,
                 )
                 try:
-                    proc.wait(timeout=20)
-                except subprocess.TimeoutExpired:
-                    subprocess.run(
-                        ["docker", "rm", "-f", gw_name],
-                        stdout=subprocess.DEVNULL,
-                        stderr=subprocess.DEVNULL,
-                    )
-                    proc.wait(timeout=10)
+                    for _ in range(100):
+                        if proc.poll() is not None:
+                            raise AssertionError(err_path.read_text() + out_path.read_text())
+                        health = curl_on_net(
+                            [
+                                "-s",
+                                "-o",
+                                "/dev/null",
+                                "-w",
+                                "%{http_code}",
+                                f"http://{gw_name}/nginx-health",
+                            ],
+                            timeout=20,
+                        )
+                        if health.returncode == 0 and health.stdout.strip() == "200":
+                            break
+                        time.sleep(0.1)
+                    else:
+                        raise AssertionError("gateway não iniciou:\n" + err_path.read_text())
 
-        combined = out_path.read_text() + err_path.read_text()
-        assert marker not in combined, "marcador bruto vazou nos logs do gateway"
-        assert "diagnostic context [redacted]" in combined, "sem prova positiva de sanitização"
-    finally:
-        subprocess.run(
-            ["docker", "rm", "-f", dead_name],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-        )
-        subprocess.run(
-            ["docker", "network", "rm", network],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-        )
+                    gw_ip = docker_ip(gw_name)
+
+                    def hit(path: str) -> tuple[int, str]:
+                        r = curl_on_net(
+                            [
+                                "-sk",
+                                "-D",
+                                "-",
+                                "-o",
+                                "-",
+                                "-w",
+                                "\n__CODE__%{http_code}",
+                                "-H",
+                                f"Host: {host}",
+                                "-H",
+                                f"Referer: {ref}",
+                                "--resolve",
+                                f"{host}:443:{gw_ip}",
+                                f"https://{host}{path}",
+                            ],
+                            timeout=45,
+                        )
+                        assert r.returncode == 0, r.stderr
+                        body, _, code_s = r.stdout.rpartition("__CODE__")
+                        return int(code_s.strip()), body
+
+                    code_c, body_c = hit(convite_path)
+                    code_a, body_a = hit(api_path)
+                    code_o, _ = hit(ordinary_path)
+                    time.sleep(0.5)
+                    rc = quit_gateway(proc, gw_name)
+                    # Drenagem: arquivos de log devem existir após encerrar
+                    assert out_path.exists() and err_path.exists()
+                    return out_path.read_text() + err_path.read_text(), body_c + "\n" + body_a, rc
+                except Exception:
+                    run(["docker", "rm", "-f", gw_name])
+                    if proc.poll() is None:
+                        proc.kill()
+                        proc.wait(timeout=10)
+                    raise
+
+        # Fase OK: URI intacta + access log sanitizado
+        logs_ok, bodies, rc_ok = run_gateway("ok", start_ok_upstream)
+        assert rc_ok == 0, f"QUIT fase ok rc={rc_ok}"
+        assert marker not in logs_ok
+        assert_access_sanitized(logs_ok, "/convite/[redacted]", marker)
+        assert_access_sanitized(logs_ok, "/api/v1/public/patient-intake/[redacted]", marker)
+        # rota comum com Referer sensível + query: path sem token de convite permanece
+        assert re.search(
+            r'"GET /ordinary-probe HTTP/[0-9.]+" [0-9]{3} .*rt=',
+            logs_ok,
+        ), "access da rota comum ausente"
+        assert convite_path in bodies, "URI /convite ao upstream foi alterada"
+        assert api_path in bodies, "URI /api patient-intake ao upstream foi alterada"
+
+        # Remover upstream OK antes do fail (aliases exclusivos)
+        run(["docker", "rm", "-f", f"dsr-gd-up-ok-{PID}"])
+
+        # Fase FAIL: error_log com Referer/query sensíveis
+        logs_fail, _, rc_fail = run_gateway("fail", start_fail_upstream)
+        assert rc_fail == 0, f"QUIT fase fail rc={rc_fail}"
+        assert marker not in logs_fail
+        assert "diagnostic context [redacted]" in logs_fail
+        assert_access_sanitized(logs_fail, "/convite/[redacted]", marker)
+        assert_access_sanitized(logs_fail, "/api/v1/public/patient-intake/[redacted]", marker)
+
+finally:
+    cleanup_all()
 
 print(
-    "OK: entrypoint+filtro (init, nginx -t, QUIT, filtro ausente); "
-    "upstream 502 em convite/API/ordinary com Referer+query; "
-    "marcador ausente; [redacted] presente; vhosts parseados"
+    "OK: vhosts reais + entrypoint; filtro ausente; nginx -t; "
+    "access sanitizado (método/status/rt); URI upstream intacta; "
+    "error [redacted]; QUIT com encerramento assertado"
 )
